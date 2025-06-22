@@ -22,8 +22,6 @@ import time
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
-import hashlib
-from pathlib import Path
 from collections import deque
 
 # Configure logging to stderr for MCP debugging
@@ -34,7 +32,71 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# DAX optimization classes and utilities
+# Updated imports
+try:
+    from mcp.types import Tool, TextContent, Resource, Prompt
+    from mcp.server.types import ToolResult
+except ImportError:
+    from mcp.types import Tool, TextContent
+
+# Custom JSON encoder for Power BI data types
+class PowerBIJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle Power BI data types"""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        elif hasattr(obj, '__dict__'):
+            return str(obj)
+        return super().default(obj)
+
+def safe_json_dumps(data, indent=2):
+    """Safely serialize data containing datetime and other non-JSON types"""
+    return json.dumps(data, indent=indent, cls=PowerBIJSONEncoder)
+
+def clean_dax_query(dax_query: str) -> str:
+    """Remove HTML/XML tags and other artifacts from DAX queries"""
+    # Remove HTML/XML tags like <oii>, </oii>, etc.
+    cleaned = re.sub(r'<[^>]+>', '', dax_query)
+    # Remove any remaining angle brackets
+    cleaned = cleaned.replace('<', '').replace('>', '')
+    # Clean up extra whitespace
+    cleaned = ' '.join(cleaned.split())
+    return cleaned
+    
+# Load environment variables
+load_dotenv()
+
+# Add the path to the ADOMD.NET library
+adomd_paths = [
+    r"C:\Program Files\Microsoft.NET\ADOMD.NET\160",
+    r"C:\Program Files\Microsoft.NET\ADOMD.NET\150",
+    r"C:\Program Files (x86)\Microsoft.NET\ADOMD.NET\160",
+    r"C:\Program Files (x86)\Microsoft.NET\ADOMD.NET\150"
+]
+
+adomd_loaded = False
+for path in adomd_paths:
+    if os.path.exists(path):
+        try:
+            sys.path.append(path)
+            clr.AddReference("Microsoft.AnalysisServices.AdomdClient")
+            adomd_loaded = True
+            logger.info(f"Loaded ADOMD.NET from {path}")
+            break
+        except Exception as e:
+            logger.debug(f"Failed to load ADOMD.NET from {path}: {e}")
+            continue
+
+if not adomd_loaded:
+    logger.error("Could not load ADOMD.NET library")
+    raise ImportError("Could not load ADOMD.NET library. Please install SSMS or ADOMD.NET client.")
+
+from pyadomd import Pyadomd
+from Microsoft.AnalysisServices.AdomdClient import AdomdSchemaGuid
+
+
 class DAXKnowledgeBase:
     """Handles scraping and searching the DAX Optimizer knowledge base"""
     def __init__(self, cache_dir: str = None):
@@ -154,88 +216,99 @@ class DAXKnowledgeBase:
             return []
 
 
-class DAXTraceCollector:
-    """Handles collecting server timings from Analysis Services traces"""
-    def __init__(self, connection_string: str):
-        self.connection_string = connection_string
-        self.trace_id = None
+class PowerBIConnector:
+    def __init__(self):
+        self.connection_string = None
+        self.connected = False
+        self.tables = []
+        self.metadata = {}
+        self.executor = ThreadPoolExecutor(max_workers=4)
         
-    def start_trace(self) -> str:
-        """Start a trace session and return trace ID"""
+    def connect(self, xmla_endpoint: str, tenant_id: str, client_id: str, 
+                client_secret: str, initial_catalog: str) -> bool:
+        """Establish connection to Power BI dataset"""
+        self.connection_string = (
+            f"Provider=MSOLAP;"
+            f"Data Source={xmla_endpoint};"
+            f"Initial Catalog={initial_catalog};"
+            f"User ID=app:{client_id}@{tenant_id};"
+            f"Password={client_secret};"
+        )
+        
         try:
+            # Test connection
             with Pyadomd(self.connection_string) as conn:
-                # Create trace definition
-                trace_definition = """
-                <Trace>
-                    <ID>{trace_id}</ID>
-                    <Name>DAX Optimization Trace</Name>
-                    <ddl200:XEvent>
-                        <event_session name="DAXOptimization" dispatchLatency="0">
-                            <event package="AS" name="VertiPaqSEQueryEnd"/>
-                            <event package="AS" name="VertiPaqSEQueryBegin"/>
-                            <event package="AS" name="DirectQueryEnd"/>
-                            <event package="AS" name="DirectQueryBegin"/>
-                            <event package="AS" name="QueryEnd"/>
-                            <event package="AS" name="QueryBegin"/>
-                            <target package="package0" name="ring_buffer">
-                                <parameter name="max_memory" value="4096"/>
-                            </target>
-                        </event_session>
-                    </ddl200:XEvent>
-                </Trace>
-                """.format(trace_id=str(uuid4()))
-                
-                # Start the trace
-                cursor = conn.cursor()
-                cursor.execute(f"CALL SYSTEM$DISCOVER_TRACE_START('{trace_definition}')")
-                result = cursor.fetchone()
-                self.trace_id = result[0] if result else None
-                cursor.close()
-                
-                return self.trace_id
-                
+                self.connected = True
+                logger.info(f"Connected to Power BI dataset: {initial_catalog}")
+                return True
         except Exception as e:
-            logger.error(f"Failed to start trace: {e}")
-            raise
+            self.connected = False
+            logger.error(f"Connection failed: {str(e)}")
+            raise Exception(f"Connection failed: {str(e)}")
     
-    def get_trace_events(self) -> pd.DataFrame:
-        """Get events from the active trace"""
-        if not self.trace_id:
-            return pd.DataFrame()
+    def discover_tables(self) -> List[str]:
+        """Discover all user-facing tables in the dataset"""
+        if not self.connected:
+            raise Exception("Not connected to Power BI")
+            
+        if self.tables:
+            return self.tables
+            
+        tables_list = []
+        try:
+            with Pyadomd(self.connection_string) as pyadomd_conn:
+                adomd_connection = pyadomd_conn.conn
+                tables_dataset = adomd_connection.GetSchemaDataSet(AdomdSchemaGuid.Tables, None)
+                
+                if tables_dataset and tables_dataset.Tables.Count > 0:
+                    schema_table = tables_dataset.Tables[0]
+                    for row in schema_table.Rows:
+                        table_name = row["TABLE_NAME"]
+                        if (not table_name.startswith("$") and 
+                            not table_name.startswith("DateTableTemplate_") and 
+                            not row["TABLE_SCHEMA"] == "$SYSTEM"):
+                            tables_list.append(table_name)
+                            
+            self.tables = tables_list
+            logger.info(f"Discovered {len(tables_list)} tables")
+            return tables_list
+        except Exception as e:
+            logger.error(f"Failed to discover tables: {str(e)}")
+            raise Exception(f"Failed to discover tables: {str(e)}")
+    
+    def execute_dax_query(self, dax_query: str) -> List[Dict[str, Any]]:
+        """Execute a DAX query and return results"""
+        if not self.connected:
+            raise Exception("Not connected to Power BI")
+            
+        cleaned_query = clean_dax_query(dax_query)
+        logger.info(f"Executing DAX query: {cleaned_query}")
             
         try:
             with Pyadomd(self.connection_string) as conn:
                 cursor = conn.cursor()
-                cursor.execute(f"SELECT * FROM DISCOVER_TRACES WHERE TraceID = '{self.trace_id}'")
+                cursor.execute(cleaned_query)
                 
-                columns = [desc[0] for desc in cursor.description]
+                headers = [desc[0] for desc in cursor.description]
                 rows = cursor.fetchall()
                 cursor.close()
                 
-                return pd.DataFrame(rows, columns=columns)
+                # Convert to list of dictionaries
+                results = []
+                for row in rows:
+                    results.append(dict(zip(headers, row)))
+                
+                logger.info(f"Query returned {len(results)} rows")
+                return results
                 
         except Exception as e:
-            logger.error(f"Failed to get trace events: {e}")
-            return pd.DataFrame()
-    
-    def stop_trace(self) -> pd.DataFrame:
-        """Stop the trace and return collected events"""
-        try:
-            events = self.get_trace_events()
-            
-            if self.trace_id:
-                with Pyadomd(self.connection_string) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(f"CALL SYSTEM$DISCOVER_TRACE_STOP('{self.trace_id}')")
-                    cursor.close()
-                
-                self.trace_id = None
-            
-            return events
-            
-        except Exception as e:
-            logger.error(f"Failed to stop trace: {e}")
-            return pd.DataFrame()
+            logger.error(f"DAX query failed: {str(e)}")
+            raise Exception(f"DAX query failed: {str(e)}")
+
+
+class DataAnalyzer:
+    def __init__(self, api_key: str):
+        self.client = openai.OpenAI(api_key=api_key)
 
 
 class DAXOptimizer:
@@ -255,114 +328,105 @@ class DAXOptimizer:
             "improvement_pct": 0
         }
         
-        # Get baseline performance
-        baseline_result, baseline_timings = await self._execute_with_timings(original_dax)
-        baseline_duration = self._extract_total_duration(baseline_timings)
-        
-        results["baseline_duration_ms"] = baseline_duration
-        
-        current_best_dax = original_dax
-        current_best_duration = baseline_duration
-        
-        for iteration in range(max_iterations):
-            logger.info(f"Starting optimization iteration {iteration + 1}")
+        try:
+            # Get baseline performance
+            baseline_result, baseline_duration = await self._execute_with_timing(original_dax)
+            results["baseline_duration_ms"] = baseline_duration
             
-            # Generate optimization suggestions
-            kb_context = self._get_relevant_kb_context(original_dax)
-            optimized_dax = await self._generate_optimized_variant(
-                current_best_dax, baseline_timings, kb_context, iteration
-            )
+            current_best_dax = original_dax
+            current_best_duration = baseline_duration
             
-            if not optimized_dax or optimized_dax.strip() == current_best_dax.strip():
-                logger.info(f"No new variant generated for iteration {iteration + 1}")
-                break
+            for iteration in range(max_iterations):
+                logger.info(f"Starting optimization iteration {iteration + 1}")
+                
+                # Generate optimization suggestions
+                kb_context = self._get_relevant_kb_context(original_dax)
+                optimized_dax = await self._generate_optimized_variant(
+                    current_best_dax, baseline_duration, kb_context, iteration
+                )
+                
+                if not optimized_dax or optimized_dax.strip() == current_best_dax.strip():
+                    logger.info(f"No new variant generated for iteration {iteration + 1}")
+                    break
+                
+                try:
+                    # Test the optimized variant
+                    variant_result, variant_duration = await self._execute_with_timing(optimized_dax)
+                    
+                    # Verify results match
+                    results_match = self._verify_results_match(baseline_result, variant_result)
+                    
+                    iteration_result = {
+                        "iteration": iteration + 1,
+                        "dax": optimized_dax,
+                        "duration_ms": variant_duration,
+                        "results_match": results_match,
+                        "improvement_pct": ((baseline_duration - variant_duration) / baseline_duration) * 100 if baseline_duration > 0 else 0
+                    }
+                    
+                    if results_match and variant_duration < current_best_duration:
+                        current_best_dax = optimized_dax
+                        current_best_duration = variant_duration
+                        results["best_variant"] = iteration_result
+                        logger.info(f"New best variant found: {iteration_result['improvement_pct']:.1f}% improvement")
+                    
+                    results["iterations"].append(iteration_result)
+                    
+                except Exception as e:
+                    logger.error(f"Iteration {iteration + 1} failed: {e}")
+                    results["iterations"].append({
+                        "iteration": iteration + 1,
+                        "dax": optimized_dax,
+                        "error": str(e)
+                    })
             
-            try:
-                # Test the optimized variant
-                variant_result, variant_timings = await self._execute_with_timings(optimized_dax)
-                variant_duration = self._extract_total_duration(variant_timings)
+            if results["best_variant"]:
+                results["improvement_pct"] = results["best_variant"]["improvement_pct"]
                 
-                # Verify results match
-                results_match = self._verify_results_match(baseline_result, variant_result)
-                
-                iteration_result = {
-                    "iteration": iteration + 1,
-                    "dax": optimized_dax,
-                    "duration_ms": variant_duration,
-                    "results_match": results_match,
-                    "improvement_pct": ((baseline_duration - variant_duration) / baseline_duration) * 100
-                }
-                
-                if results_match and variant_duration < current_best_duration:
-                    current_best_dax = optimized_dax
-                    current_best_duration = variant_duration
-                    results["best_variant"] = iteration_result
-                    logger.info(f"New best variant found: {iteration_result['improvement_pct']:.1f}% improvement")
-                
-                results["iterations"].append(iteration_result)
-                
-            except Exception as e:
-                logger.error(f"Iteration {iteration + 1} failed: {e}")
-                results["iterations"].append({
-                    "iteration": iteration + 1,
-                    "dax": optimized_dax,
-                    "error": str(e)
-                })
-        
-        if results["best_variant"]:
-            results["improvement_pct"] = results["best_variant"]["improvement_pct"]
+        except Exception as e:
+            logger.error(f"Optimization failed: {e}")
+            results["error"] = str(e)
         
         return results
     
-    async def _execute_with_timings(self, dax: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Execute DAX with server timing collection"""
-        trace_collector = DAXTraceCollector(self.connector.connection_string)
+    async def _execute_with_timing(self, dax: str) -> tuple[List[Dict[str, Any]], float]:
+        """Execute DAX and return results with timing"""
+        start_time = time.time()
         
         try:
-            # Start trace
-            trace_collector.start_trace()
-            
-            # Execute query
             result = await asyncio.get_event_loop().run_in_executor(
                 None, self.connector.execute_dax_query, dax
             )
+            end_time = time.time()
+            duration_ms = (end_time - start_time) * 1000
             
-            # Small delay to ensure trace events are captured
-            await asyncio.sleep(1)
-            
-            # Stop trace and get timings
-            timings = trace_collector.stop_trace()
-            
-            return pd.DataFrame(result), timings
+            return result, duration_ms
             
         except Exception as e:
-            trace_collector.stop_trace()
-            raise
+            end_time = time.time()
+            duration_ms = (end_time - start_time) * 1000
+            raise Exception(f"DAX execution failed ({duration_ms:.2f}ms): {str(e)}")
     
-    def _extract_total_duration(self, timings_df: pd.DataFrame) -> float:
-        """Extract total query duration from timings"""
-        if timings_df.empty:
-            return 0.0
-        
-        # Look for QueryEnd events
-        query_end_events = timings_df[timings_df.get("EventClass", "") == "QueryEnd"]
-        if not query_end_events.empty:
-            return float(query_end_events["Duration"].iloc[0])
-        
-        # Fallback: sum all durations
-        return float(timings_df.get("Duration", pd.Series([0])).sum())
-    
-    def _verify_results_match(self, baseline: pd.DataFrame, variant: pd.DataFrame) -> bool:
+    def _verify_results_match(self, baseline: List[Dict[str, Any]], variant: List[Dict[str, Any]]) -> bool:
         """Verify that two result sets match"""
         try:
-            if baseline.shape != variant.shape:
+            if len(baseline) != len(variant):
+                return False
+            
+            # Convert to DataFrames for easier comparison
+            baseline_df = pd.DataFrame(baseline)
+            variant_df = pd.DataFrame(variant)
+            
+            if baseline_df.shape != variant_df.shape:
                 return False
             
             # Sort both dataframes to handle potential ordering differences
-            baseline_sorted = baseline.sort_values(baseline.columns.tolist()).reset_index(drop=True)
-            variant_sorted = variant.sort_values(variant.columns.tolist()).reset_index(drop=True)
+            if not baseline_df.empty:
+                baseline_sorted = baseline_df.sort_values(baseline_df.columns.tolist()).reset_index(drop=True)
+                variant_sorted = variant_df.sort_values(variant_df.columns.tolist()).reset_index(drop=True)
+                return baseline_sorted.equals(variant_sorted)
             
-            return baseline_sorted.equals(variant_sorted)
+            return True
             
         except Exception as e:
             logger.error(f"Error comparing results: {e}")
@@ -370,7 +434,6 @@ class DAXOptimizer:
     
     def _get_relevant_kb_context(self, dax: str) -> str:
         """Get relevant knowledge base context for the DAX query"""
-        # Extract key terms from DAX for search
         search_terms = []
         
         # Common DAX functions to look for
@@ -391,9 +454,8 @@ class DAXOptimizer:
         
         return context
     
-    async def _generate_optimized_variant(self, dax: str, timings: pd.DataFrame, kb_context: str, iteration: int) -> str:
+    async def _generate_optimized_variant(self, dax: str, baseline_duration: float, kb_context: str, iteration: int) -> str:
         """Generate an optimized DAX variant using AI"""
-        timings_summary = self._summarize_timings(timings)
         
         prompt = f"""
         You are a DAX optimization expert. Analyze the following DAX measure and provide ONE optimized variant.
@@ -401,17 +463,16 @@ class DAXOptimizer:
         Current DAX:
         {dax}
         
-        Performance Analysis:
-        {timings_summary}
+        Current Performance: {baseline_duration:.2f}ms
         
         {kb_context}
         
         Requirements:
         1. Return ONLY the optimized DAX code, no explanations
         2. Ensure the measure returns semantically identical results
-        3. Focus on performance improvements based on the timing analysis
+        3. Focus on performance improvements
         4. Use proven optimization patterns from SQLBI and DAX Patterns
-        5. This is iteration {iteration + 1}, so try a different approach than before
+        5. This is iteration {iteration + 1}, try a different approach than before
         
         Common optimization patterns to consider:
         - Replace DISTINCTCOUNT with SUMX(VALUES(...), 1) when appropriate
@@ -419,6 +480,8 @@ class DAXOptimizer:
         - Optimize context transitions
         - Reduce materialization through better filter placement
         - Use TREATAS instead of complex FILTER expressions where applicable
+        - Consider using SUMMARIZE or SUMMARIZECOLUMNS for aggregations
+        - Replace multiple CALCULATE calls with single CALCULATE when possible
         
         Return only the optimized DAX code:
         """
@@ -443,30 +506,9 @@ class DAXOptimizer:
         except Exception as e:
             logger.error(f"Failed to generate optimized variant: {e}")
             return ""
-    
-    def _summarize_timings(self, timings: pd.DataFrame) -> str:
-        """Summarize timing information for AI analysis"""
-        if timings.empty:
-            return "No timing data available"
-        
-        # Basic summary
-        total_duration = timings.get("Duration", pd.Series([0])).sum()
-        event_counts = timings.get("EventClass", pd.Series()).value_counts()
-        
-        summary = f"Total Duration: {total_duration}ms\n"
-        summary += f"Event Breakdown: {dict(event_counts)}\n"
-        
-        # Top slow operations
-        if "TextData" in timings.columns and "Duration" in timings.columns:
-            slow_ops = timings.nlargest(3, "Duration")[["EventClass", "Duration", "TextData"]]
-            summary += "Slowest Operations:\n"
-            for _, row in slow_ops.iterrows():
-                text_data = str(row["TextData"])[:100] + "..." if len(str(row["TextData"])) > 100 else str(row["TextData"])
-                summary += f"- {row['EventClass']} ({row['Duration']}ms): {text_data}\n"
-        
-        return summary
 
-class PowerBIMCPServer:
+
+class DAXOptimizerMCPServer:
     def __init__(self):
         self.server = Server("dax-optimizer-mcp-server")
         self.connector = PowerBIConnector()
@@ -514,7 +556,7 @@ class PowerBIMCPServer:
                 ),
                 Tool(
                     name="analyze_query_performance",
-                    description="Analyze the performance of a DAX query and provide detailed server timings",
+                    description="Analyze the performance of a DAX query and provide detailed timing information",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -577,6 +619,16 @@ class PowerBIMCPServer:
                 )
             ]
         
+        @self.server.list_resources()
+        async def handle_list_resources() -> List[Resource]:
+            """Return empty list of resources - stub implementation"""
+            return []
+        
+        @self.server.list_prompts()
+        async def handle_list_prompts() -> List[Prompt]:
+            """Return empty list of prompts - stub implementation"""
+            return []
+        
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[TextContent]:
             """Handle tool calls and return results as TextContent"""
@@ -585,16 +637,6 @@ class PowerBIMCPServer:
                 
                 if name == "connect_powerbi":
                     result = await self._handle_connect(arguments)
-                elif name == "list_tables":
-                    result = await self._handle_list_tables()
-                elif name == "get_table_info":
-                    result = await self._handle_get_table_info(arguments)
-                elif name == "query_data":
-                    result = await self._handle_query_data(arguments)
-                elif name == "execute_dax":
-                    result = await self._handle_execute_dax(arguments)
-                elif name == "suggest_questions":
-                    result = await self._handle_suggest_questions()
                 elif name == "optimize_measure":
                     result = await self._handle_optimize_measure(arguments)
                 elif name == "analyze_query_performance":
@@ -618,10 +660,41 @@ class PowerBIMCPServer:
                 logger.error(f"Error executing {name}: {str(e)}", exc_info=True)
                 return [TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
     
+    async def _handle_connect(self, arguments: Dict[str, Any]) -> str:
+        """Handle connection to Power BI"""
+        try:
+            with self.connection_lock:
+                # Connect to Power BI
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    self.connector.connect,
+                    arguments["xmla_endpoint"],
+                    arguments["tenant_id"],
+                    arguments["client_id"],
+                    arguments["client_secret"],
+                    arguments["initial_catalog"]
+                )
+                
+                # Initialize the analyzer with OpenAI API key
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    return "OpenAI API key not found in environment variables"
+                
+                self.analyzer = DataAnalyzer(api_key)
+                self.optimizer = DAXOptimizer(self.connector, self.analyzer)
+                self.is_connected = True
+                
+                return f"Successfully connected to Power BI dataset '{arguments['initial_catalog']}' and initialized DAX optimizer."
+                
+        except Exception as e:
+            self.is_connected = False
+            logger.error(f"Connection failed: {str(e)}")
+            return f"Connection failed: {str(e)}"
+    
     async def _handle_optimize_measure(self, arguments: Dict[str, Any]) -> str:
         """Handle measure optimization requests"""
         if not self.is_connected:
-            return "Not connected to Power BI. Please connect first."
+            return "Not connected to Power BI. Please connect first using 'connect_powerbi'."
         
         if not self.optimizer:
             return "Optimizer not initialized. Please ensure connection is established."
@@ -651,7 +724,7 @@ class PowerBIMCPServer:
             
             if optimization_result['best_variant']:
                 best = optimization_result['best_variant']
-                result += f"🎉 Best Optimization Found:\n"
+                result += "🎉 Best Optimization Found:\n"
                 result += f"Improvement: {best['improvement_pct']:.1f}% faster\n"
                 result += f"New Duration: {best['duration_ms']:.2f}ms\n"
                 result += f"Results Match: {'✅ Yes' if best['results_match'] else '❌ No'}\n\n"
@@ -687,35 +760,29 @@ class PowerBIMCPServer:
             return "Please provide a DAX query to analyze."
         
         try:
-            trace_collector = DAXTraceCollector(self.connector.connection_string)
-            
-            # Start trace
-            trace_id = trace_collector.start_trace()
-            if not trace_id:
-                return "Failed to start performance trace."
-            
-            # Execute query
+            # Simple timing analysis
+            start_time = time.time()
             results = await asyncio.get_event_loop().run_in_executor(
                 None, self.connector.execute_dax_query, dax_query
             )
+            end_time = time.time()
+            duration_ms = (end_time - start_time) * 1000
             
-            # Wait a moment for trace events
-            await asyncio.sleep(2)
-            
-            # Get trace events
-            timings = trace_collector.stop_trace()
-            
-            if timings.empty:
-                return "No timing data collected. Query may have been too fast or trace failed."
-            
-            # Generate performance analysis
             analysis = "DAX Query Performance Analysis\n"
             analysis += "=" * 40 + "\n\n"
+            analysis += f"Query Duration: {duration_ms:.2f}ms\n"
+            analysis += f"Rows Returned: {len(results)}\n"
+            analysis += f"Query: {dax_query[:100]}{'...' if len(dax_query) > 100 else ''}\n\n"
             
-            analysis += f"Query returned {len(results)} rows\n\n"
-            
-            # Add detailed timing analysis
-            analysis += self._analyze_timings(timings)
+            # Basic performance assessment
+            if duration_ms < 100:
+                analysis += "⚡ Performance: Excellent (< 100ms)\n"
+            elif duration_ms < 500:
+                analysis += "✅ Performance: Good (100-500ms)\n"
+            elif duration_ms < 2000:
+                analysis += "⚠️ Performance: Moderate (500ms-2s)\n"
+            else:
+                analysis += "🐌 Performance: Slow (> 2s) - Consider optimization\n"
             
             return analysis
             
@@ -803,24 +870,23 @@ class PowerBIMCPServer:
                     if not self.optimizer:
                         return "Optimizer not initialized."
                     
-                    result_df, timings_df = await self.optimizer._execute_with_timings(dax)
-                    duration = self.optimizer._extract_total_duration(timings_df)
+                    result_data, duration = await self.optimizer._execute_with_timing(dax)
                     
                     variant_result = {
                         "name": variant_name,
                         "dax": dax,
                         "duration_ms": duration,
-                        "row_count": len(result_df),
+                        "row_count": len(result_data),
                         "success": True
                     }
                     
                     # Compare results with baseline
                     if baseline_result is None:
-                        baseline_result = result_df
+                        baseline_result = result_data
                         variant_result["results_match_baseline"] = True
                     else:
                         variant_result["results_match_baseline"] = self.optimizer._verify_results_match(
-                            baseline_result, result_df
+                            baseline_result, result_data
                         )
                     
                     comparison_results.append(variant_result)
@@ -877,34 +943,39 @@ class PowerBIMCPServer:
         
         return context
     
-    def _analyze_timings(self, timings_df: pd.DataFrame) -> str:
-        """Analyze timing data and return formatted analysis"""
-        if timings_df.empty:
-            return "No timing data available."
-        
-        analysis = "Performance Breakdown:\n"
-        
-        # Total duration
-        total_duration = timings_df.get("Duration", pd.Series([0])).sum()
-        analysis += f"Total Duration: {total_duration:.2f}ms\n\n"
-        
-        # Event breakdown
-        if "EventClass" in timings_df.columns:
-            event_counts = timings_df["EventClass"].value_counts()
-            analysis += "Event Breakdown:\n"
-            for event, count in event_counts.items():
-                event_duration = timings_df[timings_df["EventClass"] == event]["Duration"].sum()
-                analysis += f"  {event}: {count} events, {event_duration:.2f}ms total\n"
-            analysis += "\n"
-        
-        # Slowest operations
-        if "Duration" in timings_df.columns and len(timings_df) > 0:
-            slowest = timings_df.nlargest(5, "Duration")
-            analysis += "Top 5 Slowest Operations:\n"
-            for _, row in slowest.iterrows():
-                event_class = row.get("EventClass", "Unknown")
-                duration = row.get("Duration", 0)
-                text_data = str(row.get("TextData", ""))[:100]
-                analysis += f"  {event_class}: {duration:.2f}ms - {text_data}...\n"
-        
-        return analysis
+    async def run(self):
+        """Run the MCP server"""
+        try:
+            logger.info("Starting DAX Optimizer MCP Server...")
+            async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    InitializationOptions(
+                        server_name="dax-optimizer-mcp-server",
+                        server_version="1.0.0",
+                        capabilities=self.server.get_capabilities(
+                            notification_options=NotificationOptions(),
+                            experimental_capabilities={},
+                        ),
+                    ),
+                )
+        except Exception as e:
+            logger.error(f"Server error: {e}", exc_info=True)
+        finally:
+            logger.info("Server shutting down")
+
+
+# Main entry point
+async def main():
+    server = DAXOptimizerMCPServer()
+    await server.run()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
