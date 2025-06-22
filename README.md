@@ -1,28 +1,31 @@
 # DAX Optimizer MCP Server
 
-A powerful Model Context Protocol (MCP) server designed to optimize DAX measures and queries for Power BI. This tool helps you improve the performance of your DAX code while ensuring results remain identical.
+A powerful Model Context Protocol (MCP) server designed to optimize DAX measures and queries for Power BI and Analysis Services. This tool provides interactive authentication, comprehensive performance analysis, and AI-powered optimization suggestions without requiring Microsoft Fabric dependencies.
 
-## 🎯 Features
+## 🎯 Key Features
 
-- **DAX Measure Optimization**: Automatically generates and tests optimized variants of your DAX measures
-- **Performance Analysis**: Provides detailed timing analysis for DAX queries
-- **Knowledge Base Search**: Access optimization patterns from kb.daxoptimizer.com
-- **Result Verification**: Ensures optimized measures return identical results to originals  
-- **File Context Support**: Upload files (PDFs, docs) to provide additional context for optimization
-- **Variant Comparison**: Compare multiple DAX measure implementations side-by-side
+- **🔐 Interactive Authentication**: Login like DAX Studio/Tabular Editor with account selection
+- **⚡ DAX Measure Optimization**: AI-powered optimization with performance testing
+- **📊 Performance Analysis**: Detailed query timing and resource usage analysis
+- **🔍 Knowledge Base Search**: Access optimization patterns from kb.daxoptimizer.com
+- **✅ Result Verification**: Ensures optimized measures return identical results
+- **📁 File Context Support**: Upload documents to provide additional optimization context
+- **⚖️ Variant Comparison**: Compare multiple DAX implementations side-by-side
+- **🌐 No Fabric Dependencies**: Works with any Power BI Pro/PPU license via XMLA
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-1. **Power BI Premium Workspace**: You need access to a Premium workspace with XMLA endpoints enabled
-2. **Service Principal**: Set up a service principal with Power BI access (or use interactive login)
-3. **OpenAI API Key**: Required for AI-powered optimization suggestions
-4. **Python 3.8+**: Required for running the MCP server
+1. **Power BI Access**: Pro or Premium Per User (PPU) license
+2. **XMLA Endpoints**: Must be enabled in your Power BI workspace
+3. **Python 3.8+**: For running the MCP server
+4. **OpenAI API Key**: For AI-powered optimization features
+5. **VS Code**: With MCP extension for best experience
 
 ### Installation
 
-1. **Clone/Download the project**:
+1. **Clone the repository**:
    ```bash
    git clone <repository-url>
    cd dax-noob
@@ -34,20 +37,201 @@ A powerful Model Context Protocol (MCP) server designed to optimize DAX measures
    ```
 
 3. **Set up environment variables**:
-   Create a `.env` file or set environment variables:
+   Create a `.env` file in the project root:
    ```bash
    OPENAI_API_KEY=your_openai_api_key_here
    ```
 
-4. **Test configuration**:
-   ```bash
-   python run_server.py --check-config
-   ```
+4. **Configure VS Code MCP**:
+   The project includes a VS Code configuration. Make sure you have the MCP extension installed.
 
 ### Running the Server
 
 **For VS Code (Recommended)**:
 1. Open the project in VS Code
+2. The MCP server should be automatically configured
+3. Use the MCP tools in VS Code to interact with Power BI
+
+**For Command Line**:
+```bash
+python run_server.py
+```
+
+**For Claude Desktop**:
+Add this configuration to your Claude Desktop MCP settings:
+```json
+{
+  "mcpServers": {
+    "dax-optimizer": {
+      "command": "python",
+      "args": ["c:\\path\\to\\your\\project\\run_server.py"],
+      "env": {
+        "OPENAI_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+## 🔧 Usage Guide
+
+### 1. Authentication and Connection
+
+**Interactive Login** (Recommended):
+```
+Use the 'interactive_login' tool with your Power BI XMLA endpoint:
+- Server URL: powerbi://api.powerbi.com/v1.0/myorg/YourWorkspaceName
+```
+
+**Connection String** (Alternative):
+```
+Use 'connect_with_connection_string' if you have a custom connection string
+```
+
+### 2. Basic Workflow
+
+1. **Connect**: Use `interactive_login` with your workspace XMLA endpoint
+2. **List Databases**: Use `list_databases` to see available datasets  
+3. **Connect to Dataset**: Use `connect_to_database` with your dataset name
+4. **Get Model Info**: Use `get_model_metadata` to understand your model structure
+5. **Optimize Measures**: Use `optimize_dax_measure` to improve performance
+
+### 3. Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `interactive_login` | Login with account selection (like DAX Studio) |
+| `list_databases` | Show available datasets in your workspace |
+| `connect_to_database` | Connect to a specific dataset |
+| `get_model_metadata` | Get comprehensive model information |
+| `optimize_dax_measure` | AI-powered measure optimization |
+| `analyze_dax_performance` | Detailed performance analysis |
+| `compare_dax_variants` | Compare multiple DAX implementations |
+| `search_dax_knowledge` | Search optimization knowledge base |
+| `upload_context_file` | Add files for optimization context |
+| `get_server_info` | Get Analysis Services server details |
+
+### 4. Example: Optimizing a Measure
+
+```
+1. interactive_login: 
+   server_url: "powerbi://api.powerbi.com/v1.0/myorg/MyWorkspace"
+
+2. list_databases (to see available datasets)
+
+3. connect_to_database:
+   database_name: "My Sales Dataset"
+
+4. optimize_dax_measure:
+   measure_name: "Total Sales"
+   dax_expression: "SUM(Sales[Amount])"
+   max_iterations: 3
+```
+
+## 🔍 Architecture
+
+### Core Components
+
+- **Auth Manager**: Handles interactive authentication using MSAL
+- **DAX Analyzer**: Core optimization engine with OpenAI integration
+- **Performance Analyzer**: Query timing and resource usage analysis
+- **Model Metadata Extractor**: Comprehensive model information via DMV queries
+- **Knowledge Base**: Scrapes and searches DAX optimization resources
+
+### Key Technologies
+
+- **XMLA/DMV Queries**: Direct Analysis Services communication
+- **MSAL**: Microsoft Authentication Library for interactive login
+- **OpenAI GPT**: AI-powered optimization suggestions
+- **SQLite FTS**: Full-text search for knowledge base
+- **BeautifulSoup**: Web scraping for optimization resources
+
+## 🛠️ Configuration
+
+### Environment Variables
+
+```bash
+# Required
+OPENAI_API_KEY=your_openai_api_key
+
+# Optional
+KB_CACHE_DIR=./kb_cache
+KB_UPDATE_INTERVAL_HOURS=24
+DEFAULT_MAX_ITERATIONS=3
+OPTIMIZATION_TIMEOUT_SECONDS=300
+```
+
+### VS Code Settings
+
+The project includes a `.vscode/settings.json` file with MCP configuration. Ensure your paths are correct for your environment.
+
+### Authentication Options
+
+1. **Interactive Login** (Primary): Browser-based authentication with account selection
+2. **Device Code Flow**: For environments without browser access
+3. **Service Principal**: For automation scenarios
+
+## 📊 Performance Thresholds
+
+- **Excellent**: < 100ms
+- **Good**: 100-500ms  
+- **Moderate**: 500ms-2s
+- **Slow**: 2s-10s
+- **Very Slow**: > 10s
+
+## 🤝 Contributing
+
+This is an open-source project! Contributions are welcome:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## 📝 License
+
+[Add your license here]
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+**Import Errors**:
+- Ensure all dependencies are installed: `pip install -r requirements.txt`
+- Check Python version: Requires Python 3.8+
+
+**Authentication Failures**:
+- Verify XMLA endpoints are enabled in Power BI admin portal
+- Check workspace access permissions
+- Ensure correct XMLA endpoint format
+
+**Connection Issues**:
+- Verify network connectivity to Power BI service
+- Check firewall settings
+- Validate workspace name in XMLA endpoint
+
+**Performance Issues**:
+- Consider using device code flow in restricted environments
+- Check OpenAI API rate limits
+- Monitor Power BI capacity usage
+
+### Getting Help
+
+1. Check the troubleshooting section above
+2. Review VS Code MCP extension documentation
+3. Open an issue on GitHub with detailed error information
+4. Include relevant log output from the server
+
+## 🚀 Roadmap
+
+- [ ] DAX Studio library integration
+- [ ] Tabular Editor integration
+- [ ] Advanced query plan analysis
+- [ ] Batch optimization capabilities
+- [ ] Custom optimization rules engine
+- [ ] Performance benchmarking suite
+- [ ] Integration with CI/CD pipelines
 2. Use Ctrl+Shift+P → "Tasks: Run Task" → "Start DAX Optimizer MCP Server"
 3. The server will start and be available for VS Code Copilot Agent Mode
 

@@ -1,8 +1,11 @@
 # Core MCP and Power BI dependencies
 mcp>=0.9.0
 python-dotenv>=1.0.0
-pyadomd>=1.1.0
+pyadomd>=0.1.1
 pythonnet>=3.0.0
+
+# Interactive Authentication
+msal>=1.24.0
 
 # AI and optimization
 openai>=1.30.0
@@ -11,12 +14,13 @@ pandas>=2.0.0
 # Knowledge base scraping
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+lxml>=4.9.0
 
 # Data processing
-xml.etree.ElementTree  # Built-in module
-
-# Database for knowledge base
-# sqlite3 is built-in
-
-# Optional: For enhanced DAX pattern recognition
 regex>=2023.0.0
+
+# Database for knowledge base (sqlite3 is built-in)
+
+# Optional dependencies for enhanced functionality
+# DAX Studio integration (if available)
+# tabular-editor-python  # Uncomment if available

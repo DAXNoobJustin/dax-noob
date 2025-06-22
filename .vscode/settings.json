@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dax-optimizer": {
+      "command": "python",
+      "args": [
+        "c:\\Users\\justinmartin\\Projects\\dax-noob\\dax-noob\\run_server.py"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${env:OPENAI_API_KEY}"
+      }
+    }
+  }
+}
