@@ -1,0 +1,63 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start DAX Optimizer MCP Server",
+            "type": "shell",
+            "command": "${workspaceFolder}/run_server.py",
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "runOptions": {
+                "instanceLimit": 1
+            }
+        },
+        {
+            "label": "Check MCP Server Configuration",
+            "type": "shell",
+            "command": "${workspaceFolder}/run_server.py",
+            "args": ["--check-config"],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Install Dependencies",
+            "type": "shell",
+            "command": "pip",
+            "args": ["install", "-r", "requirements.txt"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Update DAX Knowledge Base",
+            "type": "shell",
+            "command": "python",
+            "args": ["-c", "import asyncio; from src.mcp.dax_optimizer_server import DAXKnowledgeBase; kb = DAXKnowledgeBase(); asyncio.run(kb.update_knowledge_base())"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        }
+    ]
+}

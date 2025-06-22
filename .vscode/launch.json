@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug DAX Optimizer MCP Server",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_server.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src/mcp"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Test MCP Server Config",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_server.py",
+            "args": ["--check-config"],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src/mcp"
+            }
+        }
+    ]
+}
