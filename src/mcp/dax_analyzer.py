@@ -121,6 +121,13 @@ class DAXAnalyzer:
         Execute DAX query and return results with performance metrics
         Returns: (results, performance_metrics)
         """
+        # Input validation
+        if not dax_query or not dax_query.strip():
+            raise ValueError("DAX query cannot be empty")
+        
+        if len(dax_query) > 100000:  # 100KB limit
+            raise ValueError("DAX query is too large (>100KB)")
+        
         start_time = time.time()
         
         try:
@@ -727,6 +734,9 @@ Return only the optimized DAX expression:
 
     def _get_performance_rating(self, duration_ms: float) -> str:
         """Get performance rating based on execution time"""
+        if duration_ms is None or duration_ms < 0:
+            return "Unknown"
+            
         if duration_ms < 100:
             return "Excellent"
         elif duration_ms < 500:

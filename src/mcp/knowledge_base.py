@@ -2,7 +2,6 @@
 DAX Knowledge Base - Scrapes and searches DAX optimization content
 """
 
-import asyncio
 import logging
 import sqlite3
 import requests
@@ -11,7 +10,6 @@ import re
 import time
 import os
 from typing import Dict, List, Any
-from pathlib import Path
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -198,9 +196,14 @@ class DAXKnowledgeBase:
             conn = sqlite3.connect(self.db_path)
             updated_count = 0
             skipped_count = 0
+            failed_count = 0
             
-            for url in urls:
+            for i, url in enumerate(urls):
                 try:
+                    # Add progress logging
+                    if i % 10 == 0:
+                        logger.info(f"Processing URL {i+1}/{len(urls)}")
+                    
                     # Check if URL already exists
                     cursor = conn.cursor()
                     cursor.execute("SELECT id FROM articles WHERE url = ?", (url,))
@@ -247,12 +250,13 @@ class DAXKnowledgeBase:
                     time.sleep(1)
                     
                 except Exception as e:
+                    failed_count += 1
                     logger.warning(f"Failed to scrape {url}: {e}")
                     continue
             
             conn.close()
             
-            return f"Updated {updated_count} articles, skipped {skipped_count} existing"
+            return f"Updated {updated_count} articles, skipped {skipped_count} existing, failed {failed_count}"
             
         except Exception as e:
             logger.error(f"Failed to update DAX Optimizer KB: {e}")

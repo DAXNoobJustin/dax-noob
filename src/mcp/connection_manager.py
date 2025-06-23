@@ -54,7 +54,18 @@ class ConnectionManager:
             if match:
                 self._current_database = match.group(1)
         
-        logger.info(f"Connection established to {self._current_database or 'server'}")
+        # Log connection without exposing sensitive info
+        masked_connection = self._mask_connection_string(connection_string)
+        logger.info(f"Connection established to {self._current_database or 'server'} ({masked_connection})")
+    
+    def _mask_connection_string(self, connection_string: str) -> str:
+        """Mask sensitive information in connection string for logging"""
+        masked = connection_string
+        # Mask password/token
+        masked = re.sub(r'Password=([^;]+)', 'Password=***', masked, flags=re.IGNORECASE)
+        # Mask user ID if it looks like a token
+        masked = re.sub(r'User ID=([^;@]+@[^;]+)', 'User ID=***', masked, flags=re.IGNORECASE)
+        return masked
     
     def set_database(self, database_name: str) -> str:
         """Switch to a different database and return updated connection string"""
