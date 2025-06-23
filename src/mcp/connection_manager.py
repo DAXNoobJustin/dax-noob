@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 import re
-from .config import config
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,6 @@ class ConnectionManager:
         
         logger.info(f"Switched to database: {database_name}")
         return updated_connection
-    
     def get_connection_for_component(self) -> str:
         """Get connection string for components"""
         if not self.is_connected:
@@ -101,7 +100,7 @@ class ConnectionManager:
             "current_database": self._current_database,
             "connection_time": self._connection_time.isoformat() if self._connection_time else None,
             "server_info": self._server_info,
-            "has_openai": config.openai_api_key is not None
+            "has_openai": os.getenv("OPENAI_API_KEY") is not None
         }
 
 

@@ -361,7 +361,8 @@ class DAXOptimizerMCPServer:
             return "❌ Not connected. Please login first."
         
         database_name = arguments.get("database_name")
-          try:
+        
+        try:
             # Update connection to use specific database
             await self.dax_analyzer.connect_to_database(database_name)
             await self.metadata_extractor.connect_to_database(database_name)
