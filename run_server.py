@@ -11,7 +11,7 @@ from pathlib import Path
 src_path = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_path))
 
-from mcp.server import main
+from mcp.dax_server import main
 
 if __name__ == "__main__":
     try:

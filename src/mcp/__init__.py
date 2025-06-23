@@ -6,7 +6,7 @@ Provides comprehensive DAX optimization capabilities for Power BI and Analysis S
 __version__ = "1.0.0"
 __author__ = "DAX Optimization Team"
 
-from .server import DAXOptimizerMCPServer, main
+from .dax_server import DAXOptimizerMCPServer, main
 from .dax_analyzer import DAXAnalyzer
 from .auth_manager import InteractiveAuthManager, ServicePrincipalAuthManager
 from .knowledge_base import DAXKnowledgeBase
