@@ -115,14 +115,14 @@ class DAXOptimizerMCPServer:
                     description="Get comprehensive model metadata (tables, columns, relationships). Optionally provide a DAX query to get focused metadata based on query dependencies.",
                     inputSchema={
                         "type": "object",
-                        "properties": {
-                            "dax_query": {
+                        "properties": {                            "dax_query": {
                                 "type": "string", 
                                 "description": "Optional DAX query to analyze dependencies and return focused metadata"
                             }
                         }
                     }
-                ),                Tool(
+                ),
+                Tool(
                     name="define_dax_measures",
                     description="Ensure all measures referenced in a DAX query are fully defined with DEFINE MEASURE statements",
                     inputSchema={
@@ -458,6 +458,31 @@ class DAXOptimizerMCPServer:
         except Exception as e:
             logger.error(f"Get metadata failed: {e}")
             return f"❌ Failed to get metadata: {str(e)}"
+    
+    async def _handle_define_measures(self, arguments: Dict[str, Any]) -> str:
+        """Handle DAX measure definition"""
+        if not self.is_connected:
+            return "❌ Not connected. Please login first."
+        
+        dax_query = arguments.get("dax_query")
+        
+        if not dax_query:
+            return "❌ Please provide a DAX query to analyze"
+        
+        try:
+            # Use the DAX analyzer to define all measures in the query
+            defined_query = self.dax_analyzer.define_query_measures(dax_query)
+            
+            result = "🔧 DAX Query with Defined Measures\n"
+            result += "=" * 40 + "\n\n"
+            result += f"```dax\n{defined_query}\n```\n\n"
+            result += "💡 All referenced measures are now fully defined with DEFINE MEASURE statements"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Define measures failed: {e}")
+            return f"❌ Failed to define measures: {str(e)}"
     
     async def _handle_optimize_measure(self, arguments: Dict[str, Any]) -> str:
         """Handle DAX measure optimization"""

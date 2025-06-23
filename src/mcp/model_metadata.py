@@ -288,69 +288,6 @@ class ModelMetadataExtractor:
             logger.error(f"Failed to get partitions: {e}")
             return []
     
-    async def get_table_relationships(self, table_name: str) -> List[Dict[str, Any]]:
-        """Get relationships for a specific table"""
-        try:
-            with Pyadomd(self.connection_string) as conn:
-                cursor = conn.cursor()
-                
-                query = """
-                SELECT 
-                    [PK_TABLE] as from_table,
-                    [PK_COLUMN] as from_column,
-                    [FK_TABLE] as to_table,
-                    [FK_COLUMN] as to_column
-                FROM $SYSTEM.DBSCHEMA_FOREIGN_KEYS
-                WHERE [PK_TABLE] = ? OR [FK_TABLE] = ?
-                ORDER BY [PK_TABLE], [FK_TABLE]
-                """
-                
-                cursor.execute(query, (table_name, table_name))
-                
-                relationships = []
-                for row in cursor.fetchall():
-                    relationships.append({
-                        "from_table": row[0],
-                        "from_column": row[1],
-                        "to_table": row[2],
-                        "to_column": row[3]
-                    })
-                
-                cursor.close()
-                return relationships
-                
-        except Exception as e:
-            logger.error(f"Failed to get table relationships: {e}")
-            return []
-    
-    async def get_measure_dependencies(self, measure_name: str) -> Dict[str, Any]:
-        """Get dependencies for a specific measure"""
-        try:
-            # Get the measure expression first
-            measures = await self.get_measures()
-            measure_expression = None
-            
-            for measure in measures:
-                if measure["name"] == measure_name:
-                    measure_expression = measure["expression"]
-                    break
-            
-            if not measure_expression:
-                return {"error": f"Measure {measure_name} not found"}
-            
-            # Analyze dependencies from the expression
-            dependencies = self._analyze_dax_dependencies(measure_expression)
-            
-            return {
-                "measure_name": measure_name,
-                "expression": measure_expression,
-                "dependencies": dependencies
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to get measure dependencies: {e}")
-            return {"error": str(e)}
-    
     def _analyze_dax_dependencies(self, dax_expression: str) -> Dict[str, List[str]]:
         """Analyze DAX expression to find dependencies"""
         import re
@@ -441,188 +378,58 @@ class ModelMetadataExtractor:
             return {"error": str(e)}
 
     async def get_dax_focused_metadata(self, dax_query: str) -> Dict[str, Any]:
-        """
-        Get model metadata focused on the dependencies of a specific DAX query.
-        This method analyzes the DAX query to find dependencies and then expands
-        the metadata to include related tables through relationships.
-        """
+        """Get focused metadata based on DAX query dependencies"""
         try:
-            # Get the query dependencies
-            deps_df = await self._get_dax_query_dependencies(dax_query)
+            # Import here to avoid circular imports
+            from .dax_analyzer import DAXAnalyzer
             
-            if deps_df.empty:
-                # Fallback to full metadata if dependency analysis fails
+            # Create a temporary analyzer if needed
+            if not hasattr(self, '_temp_analyzer'):
+                self._temp_analyzer = DAXAnalyzer(self.connection_string)
+            
+            # Get query dependencies
+            dependencies_df = await self._temp_analyzer.get_dax_query_dependencies(dax_query)
+            
+            if dependencies_df.empty:
                 return await self.get_full_metadata()
             
-            # Get the tables used directly by the query
-            tables_used = set(deps_df["Table Name"].unique().tolist())
+            # Extract unique table and column names from dependencies
+            referenced_tables = set(dependencies_df['Table Name'].unique())
+            referenced_columns = dependencies_df.to_dict('records')
             
-            # Get full metadata for expansion
-            full_tables = await self.get_tables()
-            full_columns = await self.get_columns()
-            full_relationships = await self.get_relationships()
+            # Get full metadata
+            full_metadata = await self.get_full_metadata()
             
-            # Expand tables to include related ones through relationships
-            expanded_tables = self._expand_tables_via_relationships(
-                tables_used, full_relationships
-            )
+            # Filter metadata to only include referenced items
+            filtered_tables = [
+                table for table in full_metadata['tables'] 
+                if table['name'] in referenced_tables
+            ]
             
-            # Filter metadata to expanded tables
-            filtered_metadata = {
+            filtered_columns = [
+                col for col in full_metadata['columns']
+                if col['table_name'] in referenced_tables
+            ]
+            
+            filtered_relationships = [
+                rel for rel in full_metadata['relationships']
+                if rel['from_table'] in referenced_tables or rel['to_table'] in referenced_tables
+            ]
+            
+            return {
                 "database_name": self.current_database,
                 "extraction_time": datetime.now().isoformat(),
-                "query_dependencies": deps_df.to_dict('records'),
-                "tables": [t for t in full_tables if t["name"] in expanded_tables],
-                "columns": [c for c in full_columns if c["table_name"] in expanded_tables],
-                "relationships": [r for r in full_relationships 
-                               if r["from_table"] in expanded_tables and r["to_table"] in expanded_tables],
-                "measures": [],  # We'll fully define measures in the query instead
-                "hierarchies": [],  # Not critical for optimization
-                "partitions": []   # Not critical for optimization
+                "query_focused": True,
+                "query_dependencies": referenced_columns,
+                "tables": filtered_tables,
+                "columns": filtered_columns,
+                "measures": full_metadata['measures'],  # Include all measures for now
+                "relationships": filtered_relationships,
+                "hierarchies": full_metadata['hierarchies'],
+                "partitions": full_metadata['partitions']
             }
             
-            logger.info(f"Extracted focused metadata for {len(expanded_tables)} tables "
-                       f"(originally {len(tables_used)} from query dependencies)")
-            
-            return filtered_metadata
-            
         except Exception as e:
-            logger.error(f"Failed to extract focused metadata: {e}")
+            logger.error(f"Failed to get focused metadata: {e}")
             # Fallback to full metadata
             return await self.get_full_metadata()
-    
-    async def _get_dax_query_dependencies(self, dax_query: str) -> Any:
-        """
-        Get DAX query dependencies using DMV queries.
-        Returns a DataFrame-like structure with columns: ['Table Name', 'Column Name']
-        """
-        try:
-            with Pyadomd(self.connection_string) as conn:
-                cursor = conn.cursor()
-                
-                # Escape quotes in DAX query
-                escaped_dax = dax_query.replace('"', '""')
-                
-                # Use INFO.CALCDEPENDENCY to get dependencies
-                dependency_query = f'''
-                EVALUATE
-                VAR source_query = "{escaped_dax}"
-                VAR all_dependencies = SELECTCOLUMNS(
-                    INFO.CALCDEPENDENCY("QUERY", source_query),
-                        "Referenced Object Type",[REFERENCED_OBJECT_TYPE],
-                        "Referenced Table", [REFERENCED_TABLE],
-                        "Referenced Object", [REFERENCED_OBJECT]
-                    )             
-                RETURN all_dependencies
-                '''
-                
-                cursor.execute(dependency_query)
-                
-                # Convert to list of dictionaries
-                columns = [desc[0] for desc in cursor.description]
-                data = cursor.fetchall()
-                
-                if not data:
-                    return {"Table Name": [], "Column Name": []}
-                
-                # Convert to a simple structure we can work with
-                dependencies = []
-                for row in data:
-                    row_dict = dict(zip(columns, row))
-                    # Clean up column names (remove brackets if present)
-                    cleaned_dict = {}
-                    for k, v in row_dict.items():
-                        clean_key = k.strip('[]')
-                        cleaned_dict[clean_key] = v
-                    
-                    # Only include columns and calc columns
-                    obj_type = cleaned_dict.get('Referenced Object Type', '').replace('_', ' ').title()
-                    if obj_type in ['Column', 'Calc Column']:
-                        table_name = cleaned_dict.get('Referenced Table', '')
-                        column_name = cleaned_dict.get('Referenced Object', '')
-                        if table_name and column_name and not column_name.startswith('RowNumber-'):
-                            dependencies.append({
-                                'Table Name': table_name,
-                                'Column Name': column_name
-                            })
-                cursor.close()
-                
-                # Create a simple DataFrame-like structure
-                class SimpleDataFrame:
-                    def __init__(self, data):
-                        self.data = data
-                        
-                    def unique(self):
-                        seen = set()
-                        result = []
-                        for item in self.data:
-                            if item not in seen:
-                                seen.add(item)
-                                result.append(item)
-                        return result
-                    
-                    def tolist(self):
-                        return self.data
-                    
-                    @property
-                    def empty(self):
-                        return len(self.data) == 0
-                    
-                    def to_dict(self, orient='records'):
-                        if orient == 'records':
-                            return [dict(zip(['Table Name', 'Column Name'], [d['Table Name'], d['Column Name']])) 
-                                   for d in self.data]
-                        return self.data
-                
-                # Create result structure
-                result = type('MockDataFrame', (), {})()
-                result.data = dependencies
-                result.empty = len(dependencies) == 0
-                
-                # Add column access
-                table_names = [d['Table Name'] for d in dependencies]
-                
-                class TableNameColumn:
-                    def __init__(self, data):
-                        self.data = data
-                    
-                    def unique(self):
-                        return SimpleDataFrame(list(set(self.data)))
-                
-                result.__dict__['Table Name'] = TableNameColumn(table_names)
-                result.to_dict = lambda orient='records': dependencies if orient == 'records' else dependencies
-                
-                return result
-                
-        except Exception as e:
-            logger.error(f"Failed to get DAX query dependencies: {e}")
-            # Return empty structure
-            empty_result = type('EmptyDataFrame', (), {})()
-            empty_result.empty = True
-            empty_result.to_dict = lambda orient='records': []
-            return empty_result
-    
-    def _expand_tables_via_relationships(self, initial_tables: set, relationships: List[Dict[str, Any]]) -> set:
-        """
-        Expand the set of tables to include related tables based on relationships.
-        This follows filtering propagation through the relationship graph.
-        """
-        expanded_tables = set(initial_tables)
-        changed = True
-        
-        # Keep expanding until no new tables are added
-        while changed:
-            changed = False
-            for rel in relationships:
-                from_table = rel.get("from_table", "")
-                to_table = rel.get("to_table", "")
-                
-                # If we have one table in the relationship, add the other
-                if from_table in expanded_tables and to_table not in expanded_tables:
-                    expanded_tables.add(to_table)
-                    changed = True
-                elif to_table in expanded_tables and from_table not in expanded_tables:
-                    expanded_tables.add(from_table)
-                    changed = True
-        
-        return expanded_tables

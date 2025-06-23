@@ -11,8 +11,7 @@
                 "PYTHONPATH": "${workspaceFolder}/src/mcp"
             },
             "justMyCode": false
-        },
-        {
+        },        {
             "name": "Test MCP Server Config",
             "type": "python",
             "request": "launch",
@@ -20,8 +19,17 @@
             "args": ["--check-config"],
             "console": "integratedTerminal",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/src/mcp"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
+        },
+        {
+            "name": "Run Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests/", "-v"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
         }
     ]
 }

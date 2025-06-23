@@ -100,23 +100,23 @@ class DAXQueryValidator:
         return cleaned
     
     def _validate_security(self, query: str, result: ValidationResult):
-        """Check for security issues"""
+        """Validate query for security issues"""
         for pattern, message in self.dangerous_patterns:
             if re.search(pattern, query):
                 result.add_issue(
                     ValidationSeverity.CRITICAL,
-                    f"Security risk: {message}",
-                    "Remove or replace the dangerous construct"
+                    message,
+                    "Remove dangerous SQL operations from DAX query"
                 )
     
     def _validate_performance(self, query: str, result: ValidationResult):
-        """Check for performance issues"""
+        """Validate query for performance issues"""
         for pattern, message in self.performance_patterns:
             if re.search(pattern, query):
                 result.add_issue(
                     ValidationSeverity.WARNING,
-                    f"Performance concern: {message}",
-                    "Consider optimizing this pattern"
+                    message,
+                    "Consider optimizing for better performance"
                 )
         
         # Check for excessive nesting
@@ -129,63 +129,81 @@ class DAXQueryValidator:
             )
     
     def _validate_syntax(self, query: str, result: ValidationResult):
-        """Basic syntax validation"""
+        """Validate query syntax"""
         for pattern, message in self.syntax_patterns:
             if re.search(pattern, query):
                 result.add_issue(
                     ValidationSeverity.ERROR,
-                    f"Syntax error: {message}",
-                    "Fix the syntax error"
+                    message,
+                    "Fix syntax error"
                 )
         
-        # Check balanced parentheses
-        if not self._check_balanced_parentheses(query):
+        # Check for balanced parentheses
+        if query.count('(') != query.count(')'):
             result.add_issue(
                 ValidationSeverity.ERROR,
                 "Unbalanced parentheses",
-                "Ensure all parentheses are properly matched"
+                "Ensure all parentheses are properly closed"
+            )
+        
+        # Check for balanced brackets
+        if query.count('[') != query.count(']'):
+            result.add_issue(
+                ValidationSeverity.ERROR,
+                "Unbalanced brackets",
+                "Ensure all brackets are properly closed"
             )
     
     def _validate_length(self, query: str, result: ValidationResult):
         """Validate query length"""
-        if len(query) > 50000:  # 50KB limit
-            result.add_issue(
-                ValidationSeverity.ERROR,
-                f"Query too long ({len(query)} characters)",
-                "Reduce query complexity or split into multiple queries"
-            )
-        elif len(query) > 10000:  # 10KB warning
+        if len(query) > 10000:
             result.add_issue(
                 ValidationSeverity.WARNING,
-                f"Large query ({len(query)} characters)",
-                "Consider breaking into smaller, more manageable queries"
+                "Query is very long",
+                "Consider breaking into smaller parts or using variables"
             )
-    
-    def _calculate_nesting_level(self, query: str) -> int:
-        """Calculate maximum nesting level of parentheses"""
-        max_level = 0
-        current_level = 0
         
-        for char in query:
-            if char == '(':
-                current_level += 1
-                max_level = max(max_level, current_level)
-            elif char == ')':
-                current_level -= 1
+        lines = query.split('\n')
+        if len(lines) > 100:
+            result.add_issue(
+                ValidationSeverity.INFO,
+                "Query has many lines",
+                "Consider formatting for better readability"
+            )
+
+    def get_validation_summary(self, result: ValidationResult) -> str:
+        """Get a formatted summary of validation results"""
+        if not result.issues:
+            return "✅ Query validation passed - no issues found"
         
-        return max_level
-    
-    def _check_balanced_parentheses(self, query: str) -> bool:
-        """Check if parentheses are balanced"""
-        count = 0
-        for char in query:
-            if char == '(':
-                count += 1
-            elif char == ')':
-                count -= 1
-                if count < 0:
-                    return False
-        return count == 0
+        summary = "🔍 Query Validation Results:\n\n"
+        
+        # Group by severity
+        by_severity = {}
+        for issue in result.issues:
+            severity = issue['severity']
+            if severity not in by_severity:
+                by_severity[severity] = []
+            by_severity[severity].append(issue)
+        
+        # Display by severity
+        severity_icons = {
+            'critical': '🚨',
+            'error': '❌',
+            'warning': '⚠️',
+            'info': 'ℹ️'
+        }
+        
+        for severity in ['critical', 'error', 'warning', 'info']:
+            if severity in by_severity:
+                summary += f"{severity_icons[severity]} {severity.upper()}:\n"
+                for issue in by_severity[severity]:
+                    summary += f"  • {issue['message']}\n"
+                    if issue.get('suggestion'):
+                        summary += f"    💡 {issue['suggestion']}\n"
+                summary += "\n"
+        
+        return summary
 
 
 # Global validator instance

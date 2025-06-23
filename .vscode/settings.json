@@ -1,4 +1,17 @@
 {
+  "python.defaultInterpreterPath": "./venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.linting.enabled": true,
+  "python.linting.pylintEnabled": true,
+  "python.formatting.provider": "black",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "files.associations": {
+    "*.pq": "powerquery",
+    "*.dax": "dax"
+  },
   "mcpServers": {
     "dax-optimizer": {
       "command": "python",
@@ -6,7 +19,8 @@
         "c:\\Users\\justinmartin\\Projects\\dax-noob\\dax-noob\\run_server.py"
       ],
       "env": {
-        "OPENAI_API_KEY": "${env:OPENAI_API_KEY}"
+        "OPENAI_API_KEY": "${env:OPENAI_API_KEY}",
+        "PYTHONPATH": "${workspaceFolder}/src"
       }
     }
   }
