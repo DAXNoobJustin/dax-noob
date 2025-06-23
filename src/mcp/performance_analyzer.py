@@ -150,9 +150,8 @@ class PerformanceAnalyzer:
             "complexity_score": 0
         }
         
-        try:
-            # Count functions
-            function_pattern = r'\\b([A-Z]+)\\s*\\('
+        try:            # Count functions
+            function_pattern = r'\b([A-Z]+)\s*\('
             functions = re.findall(function_pattern, dax_query.upper())
             complexity["function_count"] = len(functions)
             
@@ -171,9 +170,8 @@ class PerformanceAnalyzer:
                     complexity["filter_functions"].append(func)
                 elif func in context_funcs:
                     complexity["context_functions"].append(func)
-            
-            # Find table references
-            table_pattern = r"'?([A-Za-z_][A-Za-z0-9_\\s]*)'?\\["
+              # Find table references
+            table_pattern = r"'?([A-Za-z_][A-Za-z0-9_\s]*)'?\["
             tables = list(set(re.findall(table_pattern, dax_query)))
             complexity["table_references"] = tables
             

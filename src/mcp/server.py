@@ -222,6 +222,8 @@ class DAXOptimizerMCPServer:
         @self.server.list_prompts()
         async def handle_list_prompts() -> List[Prompt]:
             return []
+        
+        @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[TextContent]:
             try:
                 logger.info(f"Handling tool call: {name}")
@@ -359,9 +361,9 @@ class DAXOptimizerMCPServer:
             return "❌ Not connected. Please login first."
         
         database_name = arguments.get("database_name")
-        
-        try:
-            # Update connection to use specific database            await self.dax_analyzer.connect_to_database(database_name)
+          try:
+            # Update connection to use specific database
+            await self.dax_analyzer.connect_to_database(database_name)
             await self.metadata_extractor.connect_to_database(database_name)
             await self.performance_analyzer.connect_to_database(database_name)
             

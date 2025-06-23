@@ -26,14 +26,15 @@ class DAXAnalyzer:
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self.current_database = None
-        
-        # Initialize OpenAI client
+          # Initialize OpenAI client (optional - only needed for standalone optimization)
+        # When using with Claude/VS Code MCP, the AI analysis is handled by the client
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
             self.openai_client = openai.OpenAI(api_key=api_key)
+            logger.info("OpenAI client initialized for standalone DAX optimization")
         else:
-            logger.warning("OpenAI API key not found - optimization features will be limited")
             self.openai_client = None
+            logger.info("OpenAI not configured - using MCP client AI capabilities instead")
     
     async def test_connection(self) -> Dict[str, Any]:
         """Test the connection and return server information"""
@@ -164,28 +165,24 @@ class DAXAnalyzer:
             
             logger.error(f"DAX query failed after {duration_ms:.2f}ms: {e}")
             raise Exception(f"DAX query execution failed: {str(e)}")
-    
     async def optimize_measure(self, measure_name: str, dax_expression: str, 
                              max_iterations: int = 3, context: str = "") -> Dict[str, Any]:
         """
-        Optimize a DAX measure using AI and performance testing
+        Optimize a DAX measure using AI and performance testing.
+        When used with MCP clients (Claude/VS Code), provides performance measurement
+        for the client's AI to analyze. Can also do standalone optimization with OpenAI.
         """
-        if not self.openai_client:
-            return {
-                "measure_name": measure_name,
-                "error": "OpenAI API key not configured - optimization not available"
-            }
-        
         optimization_result = {
             "measure_name": measure_name,
             "original_dax": dax_expression,
             "iterations": [],
             "best_variant": None,
-            "baseline_performance": None
+            "baseline_performance": None,
+            "mode": "mcp_client" if not self.openai_client else "standalone"
         }
         
         try:
-            # Get baseline performance
+            # Get baseline performance (always needed)
             logger.info(f"Getting baseline performance for {measure_name}")
             baseline_query = f"EVALUATE ROW(\"Result\", {dax_expression})"
             baseline_results, baseline_perf = await self.execute_dax_query(baseline_query)
@@ -195,6 +192,24 @@ class DAXAnalyzer:
             
             logger.info(f"Baseline performance: {baseline_duration:.2f}ms")
             
+            if not self.openai_client:
+                # MCP client mode - provide performance data for client AI to analyze
+                optimization_result["message"] = "Performance measurement complete. Use MCP client AI to analyze and suggest optimizations."
+                optimization_result["performance_analysis"] = {
+                    "duration_ms": baseline_duration,
+                    "performance_rating": self._get_performance_rating(baseline_duration),
+                    "optimization_needed": baseline_duration > 1000,
+                    "suggestions_for_ai": [
+                        "Analyze DAX expression for iterator functions that could be optimized",
+                        "Check for DISTINCTCOUNT that could use COUNTROWS(VALUES(...))",
+                        "Look for context transition optimizations with CALCULATE",
+                        "Consider variable usage to avoid repeated calculations",
+                        "Evaluate filter conditions for performance improvements"
+                    ]
+                }
+                return optimization_result
+            
+            # Standalone mode with OpenAI (original logic)
             current_best_dax = dax_expression
             current_best_duration = baseline_duration
             
@@ -372,12 +387,12 @@ Return only the optimized DAX expression:
                     'ServerName', 'ProductName', 'ProductVersion', 
                     'ServerMode', 'Edition', 'BuildNumber'
                 )
-                """
-                
+                """                
                 cursor.execute(properties_query)
                 for row in cursor.fetchall():
                     server_info[row[0]] = row[1]
-                  # Memory usage
+                
+                # Memory usage
                 try:
                     cursor.execute("SELECT [MEMORY_USAGE_KB] FROM $SYSTEM.DISCOVER_MEMORYUSAGE")
                     memory_rows = cursor.fetchall()
@@ -709,3 +724,148 @@ Return only the optimized DAX expression:
         except Exception as e:
             logger.error(f"Failed to get model calc dependencies: {e}")
             return pd.DataFrame()
+
+    def _get_performance_rating(self, duration_ms: float) -> str:
+        """Get performance rating based on execution time"""
+        if duration_ms < 100:
+            return "Excellent"
+        elif duration_ms < 500:
+            return "Good"
+        elif duration_ms < 2000:
+            return "Moderate"
+        elif duration_ms < 10000:
+            return "Slow"
+        else:
+            return "Very Slow"
+    
+    async def test_dax_variants(self, measure_name: str, variants: List[Dict[str, str]]) -> Dict[str, Any]:
+        """
+        Test multiple DAX variants for performance comparison.
+        Perfect for MCP clients where AI suggests optimizations and this tool tests them.
+        
+        Args:
+            measure_name: Name of the measure being optimized
+            variants: List of {"name": "variant_name", "dax": "dax_expression"} dictionaries
+        
+        Returns:
+            Performance comparison results with recommendations
+        """
+        if not variants:
+            return {"error": "No variants provided for testing"}
+        
+        test_results = {
+            "measure_name": measure_name,
+            "test_time": datetime.now().isoformat(),
+            "variants": [],
+            "summary": {}
+        }
+        
+        baseline_result = None
+        fastest_variant = None
+        
+        try:
+            for i, variant in enumerate(variants):
+                variant_name = variant.get("name", f"Variant {i+1}")
+                dax_expression = variant.get("dax", "")
+                
+                if not dax_expression:
+                    test_results["variants"].append({
+                        "name": variant_name,
+                        "error": "No DAX expression provided"
+                    })
+                    continue
+                
+                try:
+                    # Test the variant
+                    test_query = f"EVALUATE ROW(\"Result\", {dax_expression})"
+                    variant_results, variant_perf = await self.execute_dax_query(test_query)
+                    
+                    # Extract result for comparison
+                    result_value = variant_results[0] if variant_results else None
+                    
+                    variant_info = {
+                        "name": variant_name,
+                        "dax": dax_expression,
+                        "duration_ms": variant_perf["duration_ms"],
+                        "performance_rating": self._get_performance_rating(variant_perf["duration_ms"]),
+                        "result_value": result_value,
+                        "row_count": variant_perf["row_count"],
+                        "column_count": variant_perf["column_count"]
+                    }
+                    
+                    # Set baseline (first successful variant)
+                    if baseline_result is None:
+                        baseline_result = result_value
+                        variant_info["is_baseline"] = True
+                        variant_info["results_match"] = True
+                    else:
+                        variant_info["is_baseline"] = False
+                        variant_info["results_match"] = self._verify_results_match(
+                            [{"result": baseline_result}] if baseline_result is not None else [],
+                            [{"result": result_value}] if result_value is not None else []
+                        )
+                    
+                    # Track fastest variant
+                    if fastest_variant is None or variant_perf["duration_ms"] < fastest_variant["duration_ms"]:
+                        fastest_variant = variant_info.copy()
+                    
+                    test_results["variants"].append(variant_info)
+                    
+                except Exception as e:
+                    test_results["variants"].append({
+                        "name": variant_name,
+                        "dax": dax_expression,
+                        "error": str(e)
+                    })
+            
+            # Generate summary
+            successful_variants = [v for v in test_results["variants"] if "error" not in v]
+            
+            if successful_variants:
+                durations = [v["duration_ms"] for v in successful_variants]
+                min_duration = min(durations)
+                max_duration = max(durations)
+                
+                improvement_pct = 0
+                if max_duration > 0:
+                    improvement_pct = ((max_duration - min_duration) / max_duration) * 100
+                
+                test_results["summary"] = {
+                    "total_variants": len(variants),
+                    "successful_tests": len(successful_variants),
+                    "fastest_variant": fastest_variant["name"],
+                    "fastest_duration_ms": min_duration,
+                    "slowest_duration_ms": max_duration,
+                    "max_improvement_pct": round(improvement_pct, 1),
+                    "all_results_match": all(v.get("results_match", False) for v in successful_variants),
+                    "recommendation": self._get_variant_recommendation(successful_variants)
+                }
+            
+        except Exception as e:
+            test_results["error"] = str(e)
+        
+        return test_results
+    
+    def _get_variant_recommendation(self, variants: List[Dict[str, Any]]) -> str:
+        """Generate recommendation based on variant test results"""
+        if not variants:
+            return "No successful variants to analyze"
+        
+        # Check if all results match
+        results_match = all(v.get("results_match", False) for v in variants)
+        if not results_match:
+            return "⚠️ Some variants produce different results - verify correctness before using"
+        
+        # Find performance differences
+        durations = [v["duration_ms"] for v in variants]
+        min_duration = min(durations)
+        max_duration = max(durations)
+        
+        if max_duration - min_duration < 10:  # Less than 10ms difference
+            return "✅ All variants perform similarly - choose based on readability"
+        elif min_duration < 100:
+            return "⚡ Fastest variant has excellent performance - recommended for production"
+        elif min_duration < 500:
+            return "✅ Fastest variant has good performance - safe to use"
+        else:
+            return "🔍 All variants are slow - consider further optimization"

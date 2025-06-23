@@ -377,9 +377,8 @@ class ModelMetadataExtractor:
                 column_ref = f"{table}[{column}]"
                 if column_ref not in dependencies["columns"]:
                     dependencies["columns"].append(column_ref)
-            
-            # Find DAX functions
-            function_pattern = r"\\b([A-Z]+)\\s*\\("
+              # Find DAX functions
+            function_pattern = r"\b([A-Z]+)\s*\("
             function_matches = re.findall(function_pattern, dax_expression.upper())
             
             common_functions = [
@@ -390,10 +389,9 @@ class ModelMetadataExtractor:
             for func in function_matches:
                 if func in common_functions and func not in dependencies["functions"]:
                     dependencies["functions"].append(func)
-            
-            # Find measure references (measures typically don't have table prefix)
+              # Find measure references (measures typically don't have table prefix)
             # This is basic - more sophisticated parsing would be needed for complex cases
-            measure_pattern = r"\\[([A-Za-z_][A-Za-z0-9_\\s]*)\\]"
+            measure_pattern = r"\[([A-Za-z_][A-Za-z0-9_\s]*)\]"
             measure_matches = re.findall(measure_pattern, dax_expression)
             
             for measure in measure_matches:

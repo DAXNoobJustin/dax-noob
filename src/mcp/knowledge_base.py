@@ -286,10 +286,9 @@ class DAXKnowledgeBase:
             if main_content:
                 # Get text content
                 text = main_content.get_text(separator=' ', strip=True)
-                
-                # Clean up the text
-                text = re.sub(r'\\s+', ' ', text)  # Multiple spaces to single
-                text = re.sub(r'\\n+', '\\n', text)  # Multiple newlines to single
+                  # Clean up the text
+                text = re.sub(r'\s+', ' ', text)  # Multiple spaces to single
+                text = re.sub(r'\n+', '\n', text)  # Multiple newlines to single
                 
                 return text.strip()
             
