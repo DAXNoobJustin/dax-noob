@@ -1,3 +1,0 @@
-"""
-DAX Optimizer MCP Server
-"""
