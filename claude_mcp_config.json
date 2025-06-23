@@ -2,10 +2,7 @@
   "mcpServers": {
     "dax-optimizer": {
       "command": "python",
-      "args": ["c:\\Users\\justinmartin\\Projects\\dax-noob\\dax-noob\\run_server.py"],
-      "env": {
-        "OPENAI_API_KEY": "your_openai_api_key_here"
-      }
+      "args": ["c:\\Users\\justinmartin\\Projects\\dax-noob\\dax-noob\\run_server.py"]
     }
   }
 }
