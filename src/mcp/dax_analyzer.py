@@ -3,12 +3,11 @@ DAX Analyzer - Core DAX query execution and optimization
 Uses DMV queries and XMLA connections without Fabric dependencies
 """
 
-import asyncio
 import logging
 import pandas as pd
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Tuple
 from datetime import datetime
 import openai
 from pyadomd import Pyadomd
@@ -378,15 +377,14 @@ Return only the optimized DAX expression:
                 cursor.execute(properties_query)
                 for row in cursor.fetchall():
                     server_info[row[0]] = row[1]
-                
-                # Memory usage
+                  # Memory usage
                 try:
                     cursor.execute("SELECT [MEMORY_USAGE_KB] FROM $SYSTEM.DISCOVER_MEMORYUSAGE")
                     memory_rows = cursor.fetchall()
                     if memory_rows:
                         total_memory_kb = sum(row[0] for row in memory_rows if row[0])
                         server_info["MemoryUsageMB"] = total_memory_kb / 1024
-                except:
+                except Exception:
                     server_info["MemoryUsageMB"] = "Unknown"
                 
                 # Connection info
@@ -426,3 +424,288 @@ Return only the optimized DAX expression:
         except Exception as e:
             logger.error(f"Query plan analysis failed: {e}")
             return {"error": str(e)}
+    
+    def define_query_measures(self, query: str) -> str:
+        """
+        Ensure every measure referenced in the query is declared via DEFINE MEASURE,
+        including any nested measures in those definitions. Any existing DEFINE block
+        (VARs, comments, etc.) is left untouched. Newly added measures appear immediately
+        under the DEFINE keyword.
+        """
+        
+        def normalize(name: str) -> str:
+            # Strip out all non-alphanumeric characters and lowercase
+            return re.sub(r"[^0-9A-Za-z]", "", name).lower()
+
+        upper_q = query.upper()
+        define_start = upper_q.find("DEFINE")
+        eval_start = upper_q.find("EVALUATE")
+
+        if 0 <= define_start < eval_start:
+            # There is an existing DEFINE … EVALUATE block
+            define_block = query[define_start:eval_start]
+            main_query = query[eval_start:]
+            has_define = True
+        else:
+            # No existing DEFINE; we will build one
+            define_block = ""
+            main_query = query
+            has_define = False
+
+        # Find all already‐defined measures (inside the DEFINE block)
+        def_pattern = re.compile(
+            r"MEASURE\s+(?:'[^']+'|\w+)\s*\[\s*([^\]]+)\]", re.IGNORECASE
+        )
+        raw_existing_defs = set(def_pattern.findall(define_block))
+        normalized_existing = {normalize(m) for m in raw_existing_defs}
+
+        # Build a catalog of all measures: MeasureName → (TableName, MeasureExpression)
+        measures_info = {}
+        try:
+            with Pyadomd(self.connection_string) as conn:
+                cursor = conn.cursor()
+                
+                query_measures = """
+                SELECT 
+                    [MEASURE_NAME] as name,
+                    [EXPRESSION] as expression,
+                    [MEASURE_CAPTION] as table_name
+                FROM $SYSTEM.MDSCHEMA_MEASURES
+                WHERE [CUBE_NAME] = (
+                    SELECT TOP 1 [CUBE_NAME] 
+                    FROM $SYSTEM.MDSCHEMA_CUBES 
+                    WHERE [CUBE_TYPE] = 3
+                )
+                ORDER BY [MEASURE_NAME]
+                """
+                
+                cursor.execute(query_measures)
+                
+                for row in cursor.fetchall():
+                    measure_name = row[0]
+                    expression = row[1] if row[1] else ""
+                    table_name = row[2] if row[2] else "Model"
+                    measures_info[measure_name] = (table_name, expression)
+                
+                cursor.close()
+                
+        except Exception as e:
+            logger.error(f"Failed to get measures for define_query_measures: {e}")
+            return query  # Return original if we can't get measures
+
+        # Create a lookup: normalized_name → actual_measure_name
+        measure_lookup = {
+            normalize(mname): mname for mname in measures_info.keys()
+        }
+
+        # Find every token that looks like [Something] in define_block + main_query
+        bracket_pattern = re.compile(r"\[([^\]]+)\]")
+        def extract_bracket_tokens(text: str) -> set:
+            return set(bracket_pattern.findall(text))
+
+        all_bracket_tokens = extract_bracket_tokens((define_block or "") + main_query)
+
+        # BFS over tokens to collect all missing measures (and their nested children)
+        from collections import deque
+        to_define = []
+        seen = set(normalized_existing)
+        queue = deque()
+
+        # Enqueue any bracket‐token that is not already in existing defs and exists in catalog
+        for tok in all_bracket_tokens:
+            norm_tok = normalize(tok)
+            if norm_tok not in seen and norm_tok in measure_lookup:
+                queue.append(norm_tok)
+
+        while queue:
+            norm_name = queue.popleft()
+            if norm_name in seen:
+                continue
+            # Identify actual measure name from the lookup
+            actual_name = measure_lookup[norm_name]
+            seen.add(norm_name)
+
+            table_name, expr = measures_info[actual_name]
+            to_define.append((actual_name, table_name, expr))
+
+            # Enqueue any child measure references inside this expression
+            for child_tok in extract_bracket_tokens(expr):
+                child_norm = normalize(child_tok)
+                if child_norm not in seen and child_norm in measure_lookup:
+                    queue.append(child_norm)
+
+        # If there are no new measures to define, simply return the original query as‐is
+        if not to_define and has_define:
+            # Ensure the existing DEFINE block ends with exactly one newline
+            trimmed = define_block.rstrip("\n")
+            define_block_fixed = trimmed + "\n"
+            return define_block_fixed + main_query
+        elif not to_define and not has_define:
+            return query  # no DEFINE needed
+
+        # Build the new DEFINE block
+        new_measure_lines = []
+        for actual_name, table_name, expr in to_define:
+            line = f"\tMEASURE '{table_name}'[{actual_name}] = {expr}"
+            new_measure_lines.append(line)
+
+        if has_define:
+            # Split the existing DEFINE block into lines, preserving everything
+            define_lines = define_block.splitlines()
+            # Find the DEFINE line index
+            first_idx = 0
+            while first_idx < len(define_lines) and define_lines[first_idx].strip() == "":
+                first_idx += 1
+
+            # Insert new measures right after the "DEFINE" line
+            rebuilt = []
+            rebuilt.extend(define_lines[: first_idx + 1])  # up through the "DEFINE" line
+            rebuilt.extend(new_measure_lines)              # new MEASURE lines
+            rebuilt.extend(define_lines[first_idx + 1 :])  # the original content below
+
+            # Ensure a single trailing newline
+            new_define_block = "\n".join(rebuilt).rstrip("\n") + "\n"
+
+        else:
+            # No existing DEFINE → create one from scratch
+            define_header = "DEFINE"
+            new_define_block = define_header + "\n" + "\n".join(new_measure_lines) + "\n"
+
+        # Return the newly constructed DEFINE + the original main query
+        return new_define_block + main_query
+
+    async def get_dax_query_dependencies(self, dax_query: str) -> pd.DataFrame:
+        """
+        Get DAX query dependencies using DMV queries instead of Fabric-specific functions.
+        Returns a DataFrame with columns: ['Table Name', 'Column Name']
+        """
+        try:
+            with Pyadomd(self.connection_string) as conn:
+                cursor = conn.cursor()
+                
+                # Escape quotes in DAX query
+                escaped_dax = dax_query.replace('"', '""')
+                
+                # Use INFO.CALCDEPENDENCY to get dependencies
+                dependency_query = f'''
+                EVALUATE
+                VAR source_query = "{escaped_dax}"
+                VAR all_dependencies = SELECTCOLUMNS(
+                    INFO.CALCDEPENDENCY("QUERY", source_query),
+                        "Referenced Object Type",[REFERENCED_OBJECT_TYPE],
+                        "Referenced Table", [REFERENCED_TABLE],
+                        "Referenced Object", [REFERENCED_OBJECT]
+                    )             
+                RETURN all_dependencies
+                '''
+                
+                cursor.execute(dependency_query)
+                
+                # Convert to DataFrame
+                columns = [desc[0] for desc in cursor.description]
+                data = cursor.fetchall()
+                
+                if not data:
+                    return pd.DataFrame(columns=['Table Name', 'Column Name'])
+                
+                df = pd.DataFrame(data, columns=columns)
+                cursor.close()
+                
+                # Clean up column names (remove brackets if present)
+                df.columns = df.columns.str.strip('[]')
+                
+                # Clean up object type values
+                if 'Referenced Object Type' in df.columns:
+                    df['Referenced Object Type'] = (
+                        df['Referenced Object Type'].str.replace("_", " ").str.title()
+                    )
+                
+                # Get model calc dependencies for nested dependencies
+                calc_deps = await self._get_model_calc_dependencies()
+                
+                # Expand dependencies to include nested ones
+                final_df = df.copy()
+                for _, row in df.iterrows():
+                    ot = row.get('Referenced Object Type', '')
+                    object_name = row.get('Referenced Object', '')
+                    table_name = row.get('Referenced Table', '')
+                    
+                    # Find nested dependencies
+                    nested = calc_deps[
+                        (calc_deps['Object Type'] == ot) &
+                        (calc_deps['Object Name'] == object_name) &
+                        (calc_deps['Table Name'] == table_name)
+                    ]
+                    
+                    if len(nested) > 0:
+                        subset = nested[['Referenced Object Type', 'Referenced Table', 'Referenced Object']]
+                        final_df = pd.concat([final_df, subset], ignore_index=True)
+                
+                # Filter to only columns and calc columns
+                final_df = final_df[
+                    (final_df['Referenced Object Type'].isin(['Column', 'Calc Column'])) &
+                    (~final_df['Referenced Object'].str.startswith('RowNumber-', na=False))
+                ]
+                
+                # Rename columns to match expected format
+                final_df = final_df.rename(columns={
+                    'Referenced Table': 'Table Name',
+                    'Referenced Object': 'Column Name'
+                })
+                
+                # Remove duplicates and clean up
+                final_df = final_df[['Table Name', 'Column Name']].drop_duplicates().reset_index(drop=True)
+                
+                return final_df
+                
+        except Exception as e:
+            logger.error(f"Failed to get DAX query dependencies: {e}")
+            # Return empty DataFrame on error
+            return pd.DataFrame(columns=['Table Name', 'Column Name'])
+    
+    async def _get_model_calc_dependencies(self) -> pd.DataFrame:
+        """
+        Get all model calculation dependencies using DMV queries.
+        This replaces the Fabric-specific get_model_calc_dependencies function.
+        """
+        try:
+            with Pyadomd(self.connection_string) as conn:
+                cursor = conn.cursor()
+                
+                query = """
+                SELECT
+                    [TABLE] AS [Table Name],
+                    [OBJECT] AS [Object Name],
+                    [OBJECT_TYPE] AS [Object Type],
+                    [EXPRESSION] AS [Expression],
+                    [REFERENCED_TABLE] AS [Referenced Table],
+                    [REFERENCED_OBJECT] AS [Referenced Object],
+                    [REFERENCED_OBJECT_TYPE] AS [Referenced Object Type]
+                FROM $SYSTEM.DISCOVER_CALC_DEPENDENCY
+                """
+                
+                cursor.execute(query)
+                
+                # Convert to DataFrame
+                columns = [desc[0] for desc in cursor.description]
+                data = cursor.fetchall()
+                
+                if not data:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(data, columns=columns)
+                cursor.close()
+                
+                # Clean up object types
+                df['Object Type'] = df['Object Type'].str.replace('_', ' ').str.title()
+                df['Referenced Object Type'] = df['Referenced Object Type'].str.replace('_', ' ').str.title()
+                
+                # Add full object names
+                df['Full Object Name'] = df['Table Name'] + '[' + df['Object Name'] + ']'
+                df['Referenced Full Object Name'] = df['Referenced Table'] + '[' + df['Referenced Object'] + ']'
+                
+                return df
+                
+        except Exception as e:
+            logger.error(f"Failed to get model calc dependencies: {e}")
+            return pd.DataFrame()

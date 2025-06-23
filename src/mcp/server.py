@@ -110,11 +110,28 @@ class DAXOptimizerMCPServer:
                         },
                         "required": ["database_name"]
                     }
-                ),
-                Tool(
+                ),                Tool(
                     name="get_model_metadata",
-                    description="Get comprehensive model metadata (tables, columns, measures, relationships)",
-                    inputSchema={"type": "object", "properties": {}}
+                    description="Get comprehensive model metadata (tables, columns, relationships). Optionally provide a DAX query to get focused metadata based on query dependencies.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "dax_query": {
+                                "type": "string", 
+                                "description": "Optional DAX query to analyze dependencies and return focused metadata"
+                            }
+                        }
+                    }
+                ),                Tool(
+                    name="define_dax_measures",
+                    description="Ensure all measures referenced in a DAX query are fully defined with DEFINE MEASURE statements",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "dax_query": {"type": "string", "description": "DAX query to analyze and define measures for"}
+                        },
+                        "required": ["dax_query"]
+                    }
                 ),
                 Tool(
                     name="optimize_dax_measure",
@@ -205,8 +222,6 @@ class DAXOptimizerMCPServer:
         @self.server.list_prompts()
         async def handle_list_prompts() -> List[Prompt]:
             return []
-        
-        @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[TextContent]:
             try:
                 logger.info(f"Handling tool call: {name}")
@@ -221,6 +236,8 @@ class DAXOptimizerMCPServer:
                     result = await self._handle_connect_database(arguments)
                 elif name == "get_model_metadata":
                     result = await self._handle_get_metadata(arguments)
+                elif name == "define_dax_measures":
+                    result = await self._handle_define_measures(arguments)
                 elif name == "optimize_dax_measure":
                     result = await self._handle_optimize_measure(arguments)
                 elif name == "analyze_dax_performance":
@@ -344,8 +361,7 @@ class DAXOptimizerMCPServer:
         database_name = arguments.get("database_name")
         
         try:
-            # Update connection to use specific database
-            await self.dax_analyzer.connect_to_database(database_name)
+            # Update connection to use specific database            await self.dax_analyzer.connect_to_database(database_name)
             await self.metadata_extractor.connect_to_database(database_name)
             await self.performance_analyzer.connect_to_database(database_name)
             
@@ -367,10 +383,20 @@ class DAXOptimizerMCPServer:
             return "❌ Not connected. Please login first."
         
         try:
-            metadata = await self.metadata_extractor.get_full_metadata()
+            # Check if a DAX query is provided to get focused metadata
+            dax_query = arguments.get("dax_query")
             
-            result = f"📊 Model Metadata for '{self.connection_info.get('current_database', 'Current Database')}'\n"
-            result += "=" * 60 + "\n\n"
+            if dax_query:
+                # Get focused metadata based on DAX query dependencies
+                metadata = await self.metadata_extractor.get_dax_focused_metadata(dax_query)
+                result = f"🎯 Focused Model Metadata for '{self.connection_info.get('current_database', 'Current Database')}'\n"
+                result += "=" * 70 + "\n\n"
+                result += f"� Based on DAX query dependencies\n\n"
+            else:
+                # Get full metadata
+                metadata = await self.metadata_extractor.get_full_metadata()
+                result = f"�📊 Full Model Metadata for '{self.connection_info.get('current_database', 'Current Database')}'\n"
+                result += "=" * 60 + "\n\n"
             
             # Tables summary
             tables = metadata.get('tables', [])
@@ -381,23 +407,51 @@ class DAXOptimizerMCPServer:
                 result += f"  ... and {len(tables) - 10} more tables\n"
             result += "\n"
             
-            # Measures summary
-            measures = metadata.get('measures', [])
-            result += f"📊 Measures ({len(measures)}):\n"
-            for measure in measures[:10]:  # Show first 10
-                result += f"  • {measure['name']}\n"
-            if len(measures) > 10:
-                result += f"  ... and {len(measures) - 10} more measures\n"
+            # Columns summary (show more detail for focused metadata)
+            columns = metadata.get('columns', [])
+            result += f"📊 Columns ({len(columns)}):\n"
+            if dax_query and len(columns) <= 20:
+                # Show all columns for focused metadata if not too many
+                for col in columns:
+                    result += f"  • {col['table_name']}[{col['column_name']}] ({col.get('data_type', 'Unknown')})\n"
+            else:
+                # Show summary for full metadata
+                table_col_counts = {}
+                for col in columns:
+                    table_name = col['table_name']
+                    table_col_counts[table_name] = table_col_counts.get(table_name, 0) + 1
+                
+                for table_name, col_count in list(table_col_counts.items())[:5]:
+                    result += f"  • {table_name}: {col_count} columns\n"
+                if len(table_col_counts) > 5:
+                    result += f"  ... and {len(table_col_counts) - 5} more tables\n"
             result += "\n"
             
             # Relationships summary
             relationships = metadata.get('relationships', [])
-            result += f"🔗 Relationships: {len(relationships)}\n\n"
+            result += f"🔗 Relationships ({len(relationships)}):\n"
+            for rel in relationships[:5]:  # Show first 5
+                result += f"  • {rel['from_table']}[{rel['from_column']}] → {rel['to_table']}[{rel['to_column']}]\n"
+            if len(relationships) > 5:
+                result += f"  ... and {len(relationships) - 5} more relationships\n"
+            result += "\n"
             
-            result += "💡 This metadata will be used to optimize your DAX expressions"
+            # Show query dependencies if focused metadata was used
+            if dax_query and metadata.get('query_dependencies'):
+                deps = metadata['query_dependencies']
+                result += f"🎯 Query Dependencies ({len(deps)}):\n"
+                for dep in deps[:10]:
+                    result += f"  • {dep['Table Name']}[{dep['Column Name']}]\n"
+                if len(deps) > 10:
+                    result += f"  ... and {len(deps) - 10} more dependencies\n"
+                result += "\n"
             
-            return result
+            if dax_query:
+                result += "💡 This focused metadata includes only tables/columns relevant to your DAX query"
+            else:
+                result += "💡 Use 'get_model_metadata' with a dax_query parameter to get focused metadata"
             
+            return result            
         except Exception as e:
             logger.error(f"Get metadata failed: {e}")
             return f"❌ Failed to get metadata: {str(e)}"
@@ -412,12 +466,34 @@ class DAXOptimizerMCPServer:
         max_iterations = arguments.get("max_iterations", 3)
         
         try:
+            # First, define all measures in the DAX expression to make it self-contained
+            logger.info(f"Defining measures for optimization of {measure_name}")
+            
+            # Create a simple DAX query to wrap the measure for dependency analysis
+            test_query = f"EVALUATE ROW(\"Result\", {dax_expression})"
+            defined_query = self.dax_analyzer.define_query_measures(test_query)
+            
+            # Extract the defined expression from the query
+            if "DEFINE" in defined_query:
+                # Extract just the measure definitions part
+                defined_dax = defined_query
+            else:
+                defined_dax = dax_expression
+            
             # Include uploaded file context
             context = self._get_uploaded_context()
             
+            # Get focused metadata for the measure
+            metadata = await self.metadata_extractor.get_dax_focused_metadata(test_query)
+            
             optimization_result = await self.dax_analyzer.optimize_measure(
-                measure_name, dax_expression, max_iterations, context
+                measure_name, defined_dax, max_iterations, context
             )
+            
+            # Add metadata info to the result
+            if metadata and metadata.get('query_dependencies'):
+                deps_count = len(metadata['query_dependencies'])
+                optimization_result['metadata_info'] = f"Analyzed {deps_count} query dependencies"
             
             return self._format_optimization_result(optimization_result)
             
