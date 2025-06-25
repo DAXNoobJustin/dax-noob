@@ -62,6 +62,8 @@ def get_table_sources_from_workspaces(
                         (lake_map if kind=='lakehouses' else wh_map)[ep_id] = conn
 
         for model_name in dataset_names:
+            # small change : call list_items() once per workspace
+            items = fabric.list_items(workspace=ws)
             model = server.Databases.GetByName(model_name).Model
 
             for table in model.Tables:
@@ -89,7 +91,6 @@ def get_table_sources_from_workspaces(
                         if len(matches) > 1:
                             sql_ep_id = matches[1]
                             # lookup name & type from items
-                            items = fabric.list_items(workspace=ws)
                             itm = items[items['Id']==sql_ep_id]
                             if not itm.empty:
                                 data_source_name = itm['Display Name'].iloc[0]
